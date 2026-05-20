@@ -32,7 +32,7 @@ import { colors, radius, spacing, typography } from '@/constants/theme';
 const AnimatedTextInput = Animated.createAnimatedComponent(TextInput);
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-const HERO_TARGET = 247500;
+const HERO_TARGET = 130000;
 const HERO_DURATION = 1800;
 
 function formatGrouped(n: number): string {
