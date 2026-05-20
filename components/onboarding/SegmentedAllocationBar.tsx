@@ -3,11 +3,11 @@ import { StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   cancelAnimation,
-  runOnJS,
   SharedValue,
   useAnimatedStyle,
   useSharedValue,
 } from 'react-native-reanimated';
+import { scheduleOnRN } from 'react-native-worklets';
 
 import { colors, radius } from '@/constants/theme';
 
@@ -53,7 +53,7 @@ export function SegmentedAllocationBar({ width, d1, d2, d3, onDragStart, onDragE
       cancelAnimation(d2);
       cancelAnimation(d3);
       start1.value = d1.value;
-      if (onDragStart) runOnJS(notifyStart)();
+      if (onDragStart) scheduleOnRN(notifyStart);
     })
     .onUpdate((e) => {
       const w = barWidth.value;
@@ -64,7 +64,7 @@ export function SegmentedAllocationBar({ width, d1, d2, d3, onDragStart, onDragE
       d1.value = Math.min(max, Math.max(min, start1.value + delta));
     })
     .onEnd(() => {
-      if (onDragEnd) runOnJS(notifyEnd)();
+      if (onDragEnd) scheduleOnRN(notifyEnd);
     });
 
   const pan2 = Gesture.Pan()
@@ -74,7 +74,7 @@ export function SegmentedAllocationBar({ width, d1, d2, d3, onDragStart, onDragE
       cancelAnimation(d2);
       cancelAnimation(d3);
       start2.value = d2.value;
-      if (onDragStart) runOnJS(notifyStart)();
+      if (onDragStart) scheduleOnRN(notifyStart);
     })
     .onUpdate((e) => {
       const w = barWidth.value;
@@ -85,7 +85,7 @@ export function SegmentedAllocationBar({ width, d1, d2, d3, onDragStart, onDragE
       d2.value = Math.min(max, Math.max(min, start2.value + delta));
     })
     .onEnd(() => {
-      if (onDragEnd) runOnJS(notifyEnd)();
+      if (onDragEnd) scheduleOnRN(notifyEnd);
     });
 
   const pan3 = Gesture.Pan()
@@ -95,7 +95,7 @@ export function SegmentedAllocationBar({ width, d1, d2, d3, onDragStart, onDragE
       cancelAnimation(d2);
       cancelAnimation(d3);
       start3.value = d3.value;
-      if (onDragStart) runOnJS(notifyStart)();
+      if (onDragStart) scheduleOnRN(notifyStart);
     })
     .onUpdate((e) => {
       const w = barWidth.value;
@@ -106,7 +106,7 @@ export function SegmentedAllocationBar({ width, d1, d2, d3, onDragStart, onDragE
       d3.value = Math.min(max, Math.max(min, start3.value + delta));
     })
     .onEnd(() => {
-      if (onDragEnd) runOnJS(notifyEnd)();
+      if (onDragEnd) scheduleOnRN(notifyEnd);
     });
 
   const expensesStyle = useAnimatedStyle(() => ({

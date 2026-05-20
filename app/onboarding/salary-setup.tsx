@@ -9,7 +9,7 @@ import {
 } from '@shopify/react-native-skia';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
   LayoutChangeEvent,
@@ -32,7 +32,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AllocationCard } from '@/components/onboarding/AllocationCard';
 import {
-  Fractions,
   matchPreset,
   PRESETS,
   PresetChips,
@@ -44,6 +43,8 @@ import {
   SegmentedAllocationBar,
 } from '@/components/onboarding/SegmentedAllocationBar';
 import { colors, radius, spacing, typography } from '@/constants/theme';
+import { useFinanceStore } from '@/store/useFinanceStore';
+import { Fractions } from '@/types/finance';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -74,10 +75,10 @@ function formatGrouped(n: number): string {
 function rebalanceFractions(
   segmentIdx: 0 | 1 | 2 | 3,
   newSegmentFraction: number,
-  current: Fractions
+  current: Fractions,
+  locked: boolean[]
 ): Fractions {
   const MIN = MIN_FRACTION;
-  const newF = Math.max(MIN, Math.min(1 - 3 * MIN, newSegmentFraction));
 
   const segs = [
     current.d1,
@@ -86,39 +87,63 @@ function rebalanceFractions(
     1 - current.d3,
   ];
 
-  const oldF = segs[segmentIdx];
-  const oldOtherSum = 1 - oldF;
-  const newOtherSum = 1 - newF;
+  // Partition siblings into locked (fixed) and unlocked (will absorb delta).
+  let lockedSum = 0;
+  const unlockedIdx: number[] = [];
+  let unlockedSum = 0;
+  for (let i = 0; i < 4; i++) {
+    if (i === segmentIdx) continue;
+    if (locked[i]) {
+      lockedSum += segs[i];
+    } else {
+      unlockedIdx.push(i);
+      unlockedSum += segs[i];
+    }
+  }
 
-  let result: number[];
+  // No unlocked siblings to absorb the delta — return unchanged.
+  if (unlockedIdx.length === 0) return current;
 
-  if (oldOtherSum <= 0.001) {
-    result = segs.map((_, i) => (i === segmentIdx ? newF : newOtherSum / 3));
-  } else {
-    const scale = newOtherSum / oldOtherSum;
-    result = segs.map((f, i) => (i === segmentIdx ? newF : f * scale));
+  // Cap newF so unlocked siblings can each stay at >= MIN.
+  const maxNewF = 1 - lockedSum - unlockedIdx.length * MIN;
+  const newF = Math.max(MIN, Math.min(maxNewF, newSegmentFraction));
 
-    // Clamp below-MIN segments to MIN, redistribute deficit to flexible siblings.
+  const target = 1 - newF - lockedSum; // sum that unlocked siblings must equal
+
+  const result = [...segs];
+  result[segmentIdx] = newF;
+
+  if (unlockedSum > 0.001) {
+    // Proportional rescale of unlocked siblings.
+    const scale = target / unlockedSum;
     let clampedSum = 0;
     let flexibleSum = 0;
-    const clampedFlags = result.map((f, i) => {
-      if (i === segmentIdx) return false;
-      if (f < MIN) {
+    const clampedFlags: boolean[] = new Array(4).fill(false);
+    for (const i of unlockedIdx) {
+      const scaled = segs[i] * scale;
+      if (scaled < MIN) {
+        clampedFlags[i] = true;
         clampedSum += MIN;
-        return true;
+      } else {
+        flexibleSum += segs[i];
       }
-      flexibleSum += f;
-      return false;
-    });
-
+    }
     if (clampedSum > 0 && flexibleSum > 0) {
-      const remaining = newOtherSum - clampedSum;
-      const reflexScale = Math.max(0, remaining) / flexibleSum;
-      result = result.map((f, i) => {
-        if (i === segmentIdx) return f;
-        if (clampedFlags[i]) return MIN;
-        return Math.max(MIN, f * reflexScale);
-      });
+      const remaining = Math.max(0, target - clampedSum);
+      const reflexScale = remaining / flexibleSum;
+      for (const i of unlockedIdx) {
+        result[i] = clampedFlags[i] ? MIN : segs[i] * reflexScale;
+      }
+    } else {
+      for (const i of unlockedIdx) {
+        result[i] = segs[i] * scale;
+      }
+    }
+  } else {
+    // All unlocked siblings were ~0 — share the target equally.
+    const share = target / unlockedIdx.length;
+    for (const i of unlockedIdx) {
+      result[i] = share;
     }
   }
 
@@ -129,6 +154,14 @@ function rebalanceFractions(
   };
 }
 
+const ALL_KEYS: SegmentKey[] = ['expenses', 'emergency', 'investment', 'tech'];
+const NO_LOCKS: Record<SegmentKey, boolean> = {
+  expenses: false,
+  emergency: false,
+  investment: false,
+  tech: false,
+};
+
 export default function SalarySetupScreen() {
   const { width, height } = useWindowDimensions();
 
@@ -137,6 +170,11 @@ export default function SalarySetupScreen() {
   const [editingCard, setEditingCard] = useState<SegmentKey | null>(null);
   const [editingText, setEditingText] = useState('');
   const [activePreset, setActivePreset] = useState<PresetKey | null>('balanced');
+  // Mirror of d1/d2/d3 for JS-side reads (initial card amounts, etc.). Updated
+  // on commit / drag-end / preset / reset. Shared values stay the UI-thread
+  // source of truth for the smooth bar + card animations.
+  const [stateFractions, setStateFractions] = useState<Fractions>(PRESETS.balanced);
+  const [locks, setLocks] = useState<Record<SegmentKey, boolean>>(NO_LOCKS);
 
   const salaryInputRef = useRef<TextInput>(null);
   const editInputRef = useRef<TextInput>(null);
@@ -201,19 +239,28 @@ export default function SalarySetupScreen() {
       d2: d2.value,
       d3: d3.value,
     };
+    const lockedArr = ALL_KEYS.map((k) => locks[k]);
     const next = rebalanceFractions(
       SEGMENT_INDEX[editingCard],
       newF,
-      currentFractions
+      currentFractions,
+      lockedArr
     );
     animateToFractions(next);
+    setStateFractions(next);
     setActivePreset(matchPreset(next));
     setEditingCard(null);
     setEditingText('');
-  }, [editingCard, editingText, salary, d1, d2, d3, animateToFractions]);
+  }, [editingCard, editingText, salary, locks, d1, d2, d3, animateToFractions]);
 
   const startCardEdit = (key: SegmentKey) => {
     if (salary <= 0) return;
+    // Need at least one unlocked sibling to absorb the change.
+    const allSiblingsLocked = ALL_KEYS.every((k) => k === key || locks[k]);
+    if (allSiblingsLocked) {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+      return;
+    }
     if (editingCard && editingCard !== key) {
       commitEdit();
     }
@@ -221,6 +268,11 @@ export default function SalarySetupScreen() {
     setEditingCard(key);
     setEditingText('');
     setTimeout(() => editInputRef.current?.focus(), 0);
+  };
+
+  const toggleLock = (key: SegmentKey) => {
+    Haptics.selectionAsync();
+    setLocks((l) => ({ ...l, [key]: !l[key] }));
   };
 
   const handleEditChange = (text: string) => {
@@ -236,7 +288,9 @@ export default function SalarySetupScreen() {
   const handlePresetTap = (key: PresetKey) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     animateToFractions(PRESETS[key]);
+    setStateFractions(PRESETS[key]);
     setActivePreset(key);
+    setLocks(NO_LOCKS);
     if (editingCard) {
       setEditingCard(null);
       setEditingText('');
@@ -246,17 +300,44 @@ export default function SalarySetupScreen() {
   const handleResetTap = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     animateToFractions(PRESETS.balanced);
+    setStateFractions(PRESETS.balanced);
     setActivePreset('balanced');
+    setLocks(NO_LOCKS);
   };
 
   const handleDragEnd = () => {
     const current: Fractions = { d1: d1.value, d2: d2.value, d3: d3.value };
+    setStateFractions(current);
     setActivePreset(matchPreset(current));
   };
 
+  // Initial text values for each AllocationCard's defaultValue. Recomputed
+  // whenever salary or stateFractions change — so a card that re-mounts after
+  // editing seeds with the correct current value rather than the balanced default.
+  const initialTexts = useMemo(() => {
+    const segs = [
+      stateFractions.d1,
+      stateFractions.d2 - stateFractions.d1,
+      stateFractions.d3 - stateFractions.d2,
+      1 - stateFractions.d3,
+    ];
+    const amounts = segs.map((f) => formatGrouped(Math.round(salary * f)));
+    const pcts = segs.map((f) => `${Math.round(f * 100)}%`);
+    return {
+      expenses: { amount: amounts[0], pct: pcts[0] },
+      emergency: { amount: amounts[1], pct: pcts[1] },
+      investment: { amount: amounts[2], pct: pcts[2] },
+      tech: { amount: amounts[3], pct: pcts[3] },
+    };
+  }, [salary, stateFractions]);
+
+  const setSalaryAndFractions = useFinanceStore((s) => s.setSalaryAndFractions);
+
   const handleContinue = () => {
+    if (salary <= 0) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    // Next screen wired in the next step.
+    setSalaryAndFractions(salary, { d1: d1.value, d2: d2.value, d3: d3.value });
+    router.push('/onboarding/goals-setup');
   };
 
   const handleBack = () => {
@@ -313,7 +394,7 @@ export default function SalarySetupScreen() {
               <Ionicons name="chevron-back" size={22} color={colors.text.primary} />
             </AnimatedPressable>
             <View style={styles.stepBadge}>
-              <Text style={styles.stepText}>Step 1 of 3</Text>
+              <Text style={styles.stepText}>Step 1 of 2</Text>
             </View>
           </Animated.View>
 
@@ -386,6 +467,10 @@ export default function SalarySetupScreen() {
                   endBoundary={d1}
                   isEditing={editingCard === 'expenses'}
                   editingText={editingText}
+                  initialAmountText={initialTexts.expenses.amount}
+                  initialPctText={initialTexts.expenses.pct}
+                  isLocked={locks.expenses}
+                  onToggleLock={() => toggleLock('expenses')}
                   onPressEdit={() => startCardEdit('expenses')}
                 />
                 <AllocationCard
@@ -396,6 +481,10 @@ export default function SalarySetupScreen() {
                   endBoundary={d2}
                   isEditing={editingCard === 'emergency'}
                   editingText={editingText}
+                  initialAmountText={initialTexts.emergency.amount}
+                  initialPctText={initialTexts.emergency.pct}
+                  isLocked={locks.emergency}
+                  onToggleLock={() => toggleLock('emergency')}
                   onPressEdit={() => startCardEdit('emergency')}
                 />
                 <AllocationCard
@@ -406,6 +495,10 @@ export default function SalarySetupScreen() {
                   endBoundary={d3}
                   isEditing={editingCard === 'investment'}
                   editingText={editingText}
+                  initialAmountText={initialTexts.investment.amount}
+                  initialPctText={initialTexts.investment.pct}
+                  isLocked={locks.investment}
+                  onToggleLock={() => toggleLock('investment')}
                   onPressEdit={() => startCardEdit('investment')}
                 />
                 <AllocationCard
@@ -416,6 +509,10 @@ export default function SalarySetupScreen() {
                   endBoundary={one}
                   isEditing={editingCard === 'tech'}
                   editingText={editingText}
+                  initialAmountText={initialTexts.tech.amount}
+                  initialPctText={initialTexts.tech.pct}
+                  isLocked={locks.tech}
+                  onToggleLock={() => toggleLock('tech')}
                   onPressEdit={() => startCardEdit('tech')}
                 />
               </View>

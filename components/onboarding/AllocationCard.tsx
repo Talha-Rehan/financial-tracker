@@ -1,3 +1,4 @@
+import { Ionicons } from '@expo/vector-icons';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import Animated, {
   SharedValue,
@@ -28,6 +29,10 @@ type Props = {
   endBoundary: SharedValue<number>;
   isEditing: boolean;
   editingText: string;
+  initialAmountText: string;
+  initialPctText: string;
+  isLocked: boolean;
+  onToggleLock: () => void;
   onPressEdit: () => void;
 };
 
@@ -39,16 +44,12 @@ export function AllocationCard({
   endBoundary,
   isEditing,
   editingText,
+  initialAmountText,
+  initialPctText,
+  isLocked,
+  onToggleLock,
   onPressEdit,
 }: Props) {
-  // Initial values for defaultValue — Reanimated's animated text prop doesn't
-  // always paint on first mount until a shared value next changes, so we seed
-  // the TextInputs with the correct starting text.
-  const initialFraction = endBoundary.value - startBoundary.value;
-  const initialAmount = Math.max(0, Math.round(salarySV.value * initialFraction));
-  const initialAmountText = formatGrouped(initialAmount);
-  const initialPctText = `${Math.round(initialFraction * 100)}%`;
-
   const amountProps = useAnimatedProps(() => {
     const fraction = endBoundary.value - startBoundary.value;
     const amount = Math.max(0, Math.round(salarySV.value * fraction));
@@ -68,11 +69,31 @@ export function AllocationCard({
       style={({ pressed }) => [
         styles.card,
         isEditing && styles.cardEditing,
+        isLocked && !isEditing && styles.cardLocked,
         pressed && !isEditing && styles.cardPressed,
       ]}>
       <View style={styles.header}>
-        <View style={[styles.dot, { backgroundColor: color }]} />
-        <Text style={styles.label}>{label}</Text>
+        <View style={styles.headerLeft}>
+          <View style={[styles.dot, { backgroundColor: color }]} />
+          <Text style={styles.label} numberOfLines={1}>
+            {label}
+          </Text>
+        </View>
+        <Pressable
+          onPress={onToggleLock}
+          hitSlop={10}
+          style={({ pressed }) => [
+            styles.lockBtn,
+            isLocked && styles.lockBtnActive,
+            pressed && styles.lockBtnPressed,
+          ]}
+          accessibilityLabel={isLocked ? 'Unlock segment' : 'Lock segment'}>
+          <Ionicons
+            name={isLocked ? 'lock-closed' : 'lock-open-outline'}
+            size={12}
+            color={isLocked ? colors.text.primary : colors.text.tertiary}
+          />
+        </Pressable>
       </View>
 
       <View style={styles.amountRow}>
@@ -121,11 +142,36 @@ const styles = StyleSheet.create({
     borderColor: colors.text.primary,
     backgroundColor: 'rgba(255, 255, 255, 0.12)',
   },
+  cardLocked: {
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.sm,
+    justifyContent: 'space-between',
     marginBottom: spacing.md,
+  },
+  headerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    flex: 1,
+    marginRight: spacing.sm,
+  },
+  lockBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'transparent',
+    flexShrink: 0,
+  },
+  lockBtnActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  lockBtnPressed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
   dot: {
     width: 8,
@@ -137,6 +183,7 @@ const styles = StyleSheet.create({
     color: colors.text.secondary,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
+    flexShrink: 1,
   },
   amountRow: {
     flexDirection: 'row',
