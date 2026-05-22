@@ -8,7 +8,9 @@ import {
 } from '@shopify/react-native-skia';
 import * as Haptics from 'expo-haptics';
 import { router } from 'expo-router';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+
+import { useFinanceStore } from '@/store/useFinanceStore';
 import {
   Platform,
   Pressable,
@@ -49,6 +51,24 @@ function formatGrouped(n: number): string {
 
 export default function WelcomeScreen() {
   const { width, height } = useWindowDimensions();
+
+  // Track persist hydration so the CTA label and target route reflect the
+  // saved onboarding flag (not the in-memory default of false).
+  const [hydrated, setHydrated] = useState(() =>
+    useFinanceStore.persist.hasHydrated()
+  );
+
+  useEffect(() => {
+    if (hydrated) return;
+    const unsub = useFinanceStore.persist.onFinishHydration(() => {
+      setHydrated(true);
+    });
+    return unsub;
+  }, [hydrated]);
+
+  const onboardingComplete = useFinanceStore(
+    (s) => s.onboardingComplete
+  );
 
   const count = useSharedValue(0);
   const heroOpacity = useSharedValue(0);
@@ -99,9 +119,16 @@ export default function WelcomeScreen() {
     ctaScale.value = withTiming(1, { duration: 180 });
   };
   const handlePress = () => {
+    if (!hydrated) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    router.push('/onboarding/salary-setup');
+    if (onboardingComplete) {
+      router.replace('/(tabs)');
+    } else {
+      router.push('/onboarding/initial-savings');
+    }
   };
+
+  const ctaLabel = hydrated && onboardingComplete ? 'Open app' : 'Get started';
 
   // Mesh blob positions, scaled to viewport.
   const blob1 = { cx: width * 0.22, cy: height * 0.28, r: width * 0.85 };
@@ -171,9 +198,10 @@ export default function WelcomeScreen() {
             onPressIn={handlePressIn}
             onPressOut={handlePressOut}
             onPress={handlePress}
+            disabled={!hydrated}
             accessibilityRole="button"
-            accessibilityLabel="Get started">
-            <Text style={styles.ctaText}>Get started</Text>
+            accessibilityLabel={ctaLabel}>
+            <Text style={styles.ctaText}>{ctaLabel}</Text>
           </AnimatedPressable>
         </Animated.View>
       </SafeAreaView>

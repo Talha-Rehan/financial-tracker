@@ -48,6 +48,7 @@ export default function GoalsSetupScreen() {
   const addGoal = useFinanceStore((s) => s.addGoal);
   const updateGoal = useFinanceStore((s) => s.updateGoal);
   const removeGoal = useFinanceStore((s) => s.removeGoal);
+  const completeOnboarding = useFinanceStore((s) => s.completeOnboarding);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -95,12 +96,14 @@ export default function GoalsSetupScreen() {
 
   const handleContinue = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    completeOnboarding();
     router.replace('/(tabs)');
   };
 
   const handleSkip = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     goals.forEach((g) => removeGoal(g.id));
+    completeOnboarding();
     router.replace('/(tabs)');
   };
 
@@ -149,7 +152,7 @@ export default function GoalsSetupScreen() {
             <Ionicons name="chevron-back" size={22} color={colors.text.primary} />
           </AnimatedPressable>
           <View style={styles.stepBadge}>
-            <Text style={styles.stepText}>Step 2 of 2</Text>
+            <Text style={styles.stepText}>Step 3 of 3</Text>
           </View>
         </Animated.View>
 

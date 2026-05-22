@@ -40,3 +40,14 @@ export type Transaction = {
   tags?: string[];
 };
 
+export type InvestmentEntryType = 'sip' | 'lump_sum' | 'withdrawal';
+
+export type InvestmentEntry = {
+  id: string;
+  date: string;
+  provider: string;
+  type: InvestmentEntryType;
+  amount: number;
+  notes?: string;
+};
+

@@ -1,4 +1,6 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
+import { createJSONStorage, persist } from 'zustand/middleware';
 
 import { colors } from '@/constants/theme';
 import {
@@ -6,6 +8,8 @@ import {
   FundId,
   Fractions,
   Goal,
+  InvestmentEntry,
+  InvestmentEntryType,
   MonthSnapshot,
   Transaction,
   TransactionType,
@@ -49,10 +53,16 @@ type State = {
   monthsLogged: number;
   snapshots: MonthSnapshot[];
   transactions: Transaction[];
+  investmentEntries: InvestmentEntry[];
+  onboardingComplete: boolean;
 };
 
 type Actions = {
   setSalaryAndFractions: (salary: number, fractions: Fractions) => void;
+  updateSalary: (salary: number) => void;
+  updateFractions: (fractions: Fractions) => void;
+  updateEmergencyTarget: (target: number) => void;
+  setInitialSavings: (balances: FundBalances) => void;
   addGoal: (goal: Omit<Goal, 'id' | 'purchased'>) => void;
   updateGoal: (id: string, patch: Partial<Goal>) => void;
   removeGoal: (id: string) => void;
@@ -60,7 +70,66 @@ type Actions = {
   logMonth: () => void;
   addTransaction: (input: AddTransactionInput) => void;
   removeTransaction: (id: string) => void;
+  addInvestmentEntry: (input: AddInvestmentEntryInput) => void;
+  removeInvestmentEntry: (id: string) => void;
+  completeOnboarding: () => void;
+  resetGoals: () => void;
+  resetActivity: () => void;
+  resetAllData: () => void;
 };
+
+export type AddInvestmentEntryInput = {
+  provider: string;
+  type: InvestmentEntryType;
+  amount: number;
+  date?: string;
+  notes?: string;
+};
+
+export const DEFAULT_INVESTMENT_PROVIDER = 'Al-Meezan';
+
+export function investmentTotal(entries: InvestmentEntry[]): number {
+  let total = 0;
+  for (const e of entries) {
+    if (e.type === 'withdrawal') total -= e.amount;
+    else total += e.amount;
+  }
+  return Math.max(0, total);
+}
+
+export function primaryProvider(entries: InvestmentEntry[]): string {
+  if (entries.length === 0) return DEFAULT_INVESTMENT_PROVIDER;
+  const counts = new Map<string, number>();
+  for (const e of entries) {
+    counts.set(e.provider, (counts.get(e.provider) ?? 0) + 1);
+  }
+  let best = DEFAULT_INVESTMENT_PROVIDER;
+  let bestN = -1;
+  for (const [p, n] of counts) {
+    if (n > bestN) {
+      best = p;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+export function recentProviders(entries: InvestmentEntry[], limit = 5): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  // Most recent first.
+  const sorted = [...entries].sort((a, b) => b.date.localeCompare(a.date));
+  for (const e of sorted) {
+    if (seen.has(e.provider)) continue;
+    seen.add(e.provider);
+    out.push(e.provider);
+    if (out.length >= limit) break;
+  }
+  if (!seen.has(DEFAULT_INVESTMENT_PROVIDER)) {
+    out.push(DEFAULT_INVESTMENT_PROVIDER);
+  }
+  return out;
+}
 
 export type AddTransactionInput = {
   type: Extract<TransactionType, 'income' | 'expense'>;
@@ -108,15 +177,20 @@ export function nextBalances(
   };
 }
 
-export function totalWealth(b: FundBalances): number {
-  return b.emergency + b.tech + b.investment;
+export function totalWealth(
+  b: FundBalances,
+  entries: InvestmentEntry[] = []
+): number {
+  return b.emergency + b.tech + b.investment + investmentTotal(entries);
 }
 
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-export const useFinanceStore = create<State & Actions>((set, get) => ({
+export const useFinanceStore = create<State & Actions>()(
+  persist(
+    (set, get) => ({
   salary: DEFAULT_SALARY,
   fractions: DEFAULT_FRACTIONS,
   emergencyTarget: DEFAULT_EMERGENCY_TARGET,
@@ -125,8 +199,53 @@ export const useFinanceStore = create<State & Actions>((set, get) => ({
   monthsLogged: 0,
   snapshots: [],
   transactions: [],
+  investmentEntries: [],
+  onboardingComplete: false,
 
   setSalaryAndFractions: (salary, fractions) => set({ salary, fractions }),
+  updateSalary: (salary) => set({ salary: Math.max(0, Math.round(salary)) }),
+  updateFractions: (fractions) => set({ fractions }),
+  updateEmergencyTarget: (target) =>
+    set({ emergencyTarget: Math.max(0, Math.round(target)) }),
+  completeOnboarding: () => set({ onboardingComplete: true }),
+
+  // Records the user's opening balances at the start of the journey. Writes
+  // fund balances directly, creates one income transaction per non-zero fund
+  // ("Initial savings"), and stamps a `month: 0` snapshot so the Dashboard
+  // delta math has a baseline (otherwise the first logged month's delta would
+  // wrongly include the opening amount).
+  setInitialSavings: (balances) =>
+    set((s) => {
+      const safe: FundBalances = {
+        emergency: Math.max(0, Math.round(balances.emergency)),
+        tech: Math.max(0, Math.round(balances.tech)),
+        investment: Math.max(0, Math.round(balances.investment)),
+      };
+      const date = new Date().toISOString();
+      const newTxs: Transaction[] = (
+        ['emergency', 'tech', 'investment'] as FundId[]
+      )
+        .filter((f) => safe[f] > 0)
+        .map((f) => ({
+          id: makeId('tx'),
+          date,
+          note: 'Initial savings (opening balance)',
+          amount: safe[f],
+          type: 'income',
+          fund: f,
+        }));
+      const opening: MonthSnapshot = {
+        month: 0,
+        date,
+        balances: safe,
+        totalWealth: totalWealth(safe, s.investmentEntries),
+      };
+      return {
+        fundBalances: safe,
+        snapshots: [opening],
+        transactions: [...newTxs, ...s.transactions],
+      };
+    }),
 
   addGoal: (goal) =>
     set((s) => ({
@@ -193,7 +312,7 @@ export const useFinanceStore = create<State & Actions>((set, get) => ({
       month,
       date: new Date().toISOString(),
       balances: next,
-      totalWealth: totalWealth(next),
+      totalWealth: totalWealth(next, s.investmentEntries),
     };
     const date = new Date().toISOString();
     const delta: Record<FundId, number> = {
@@ -263,7 +382,90 @@ export const useFinanceStore = create<State & Actions>((set, get) => ({
         transactions: s.transactions.filter((t) => t.id !== id),
       };
     }),
-}));
+
+  addInvestmentEntry: (input) =>
+    set((s) => {
+      if (input.amount <= 0) return s;
+      const newBalances = { ...s.fundBalances };
+      if (input.type === 'withdrawal') {
+        // Withdrawing previously-deployed money returns it to the pool.
+        newBalances.investment = newBalances.investment + input.amount;
+      } else {
+        // SIP / lump_sum deploys money from the pool. Reject if pool is short.
+        if (newBalances.investment < input.amount) return s;
+        newBalances.investment = newBalances.investment - input.amount;
+      }
+      const entry: InvestmentEntry = {
+        id: makeId('inv'),
+        date: input.date ?? new Date().toISOString(),
+        provider: input.provider.trim() || DEFAULT_INVESTMENT_PROVIDER,
+        type: input.type,
+        amount: input.amount,
+        notes: input.notes?.trim() || undefined,
+      };
+      return {
+        investmentEntries: [entry, ...s.investmentEntries],
+        fundBalances: newBalances,
+      };
+    }),
+
+  removeInvestmentEntry: (id) =>
+    set((s) => {
+      const entry = s.investmentEntries.find((e) => e.id === id);
+      if (!entry) return s;
+      // Reverse the pool change.
+      const newBalances = { ...s.fundBalances };
+      if (entry.type === 'withdrawal') {
+        // Undo a withdrawal — remove from pool.
+        newBalances.investment = Math.max(
+          0,
+          newBalances.investment - entry.amount
+        );
+      } else {
+        // Undo a deployment — return to pool.
+        newBalances.investment = newBalances.investment + entry.amount;
+      }
+      return {
+        investmentEntries: s.investmentEntries.filter((e) => e.id !== id),
+        fundBalances: newBalances,
+      };
+    }),
+
+  resetGoals: () => set({ goals: [] }),
+
+  // Wipes everything that accumulates over time. Keeps budget config (salary,
+  // fractions, emergency target, goals).
+  resetActivity: () =>
+    set({
+      fundBalances: ZERO_BALANCES,
+      monthsLogged: 0,
+      snapshots: [],
+      transactions: [],
+      investmentEntries: [],
+    }),
+
+  // Full wipe back to first-launch defaults. Clears onboarding too so the
+  // user goes back through Welcome → Salary → Goals.
+  resetAllData: () =>
+    set({
+      salary: DEFAULT_SALARY,
+      fractions: DEFAULT_FRACTIONS,
+      emergencyTarget: DEFAULT_EMERGENCY_TARGET,
+      goals: SUGGESTED_GOALS,
+      fundBalances: ZERO_BALANCES,
+      monthsLogged: 0,
+      snapshots: [],
+      transactions: [],
+      investmentEntries: [],
+      onboardingComplete: false,
+    }),
+}),
+    {
+      name: 'mypocket-store-v1',
+      storage: createJSONStorage(() => AsyncStorage),
+    }
+  )
+);
 
 export function monthlyTechAllocation(salary: number, fractions: Fractions): number {
   return Math.round(salary * (1 - fractions.d3));

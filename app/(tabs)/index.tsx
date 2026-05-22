@@ -32,6 +32,7 @@ import { NetWorthHero } from '@/components/dashboard/NetWorthHero';
 import { colors, radius, spacing, typography } from '@/constants/theme';
 import {
   computeAllocation,
+  investmentTotal,
   totalWealth,
   useFinanceStore,
 } from '@/store/useFinanceStore';
@@ -61,6 +62,7 @@ export default function DashboardTab() {
   const monthsLogged = useFinanceStore((s) => s.monthsLogged);
   const snapshots = useFinanceStore((s) => s.snapshots);
   const goals = useFinanceStore((s) => s.goals);
+  const investmentEntries = useFinanceStore((s) => s.investmentEntries);
   const logMonth = useFinanceStore((s) => s.logMonth);
 
   const allocation = useMemo(
@@ -68,11 +70,20 @@ export default function DashboardTab() {
     [salary, fractions]
   );
 
-  const netWorth = totalWealth(fundBalances);
+  const deployedInvestments = useMemo(
+    () => investmentTotal(investmentEntries),
+    [investmentEntries]
+  );
+
+  const netWorth = totalWealth(fundBalances, investmentEntries);
 
   const deltaThisMonth = useMemo(() => {
     if (snapshots.length === 0) return 0;
-    if (snapshots.length === 1) return snapshots[0].totalWealth;
+    // First snapshot may be the opening balance (month: 0) — treat it as a
+    // baseline, not as a logged-month delta.
+    if (snapshots.length === 1) {
+      return snapshots[0].month === 0 ? 0 : snapshots[0].totalWealth;
+    }
     const prev = snapshots[snapshots.length - 2].totalWealth;
     const curr = snapshots[snapshots.length - 1].totalWealth;
     return curr - prev;
@@ -122,12 +133,20 @@ export default function DashboardTab() {
   }, [fundBalances.emergency, emergencyTarget, allocation.emergency]);
 
   const investmentFooter = useMemo(() => {
-    if (monthsLogged === 0) return 'No contributions yet';
-    if (investmentGoals.length > 0) {
-      return `${investmentGoals.length} active goal${investmentGoals.length > 1 ? 's' : ''}`;
+    if (monthsLogged === 0 && deployedInvestments === 0) {
+      return 'No contributions yet';
+    }
+    if (fundBalances.investment > 0 && deployedInvestments > 0) {
+      return `${formatGrouped(fundBalances.investment)} available · ${formatGrouped(deployedInvestments)} deployed`;
+    }
+    if (fundBalances.investment > 0) {
+      return `₨ ${formatGrouped(fundBalances.investment)} available to invest`;
+    }
+    if (deployedInvestments > 0) {
+      return `All ₨ ${formatGrouped(deployedInvestments)} deployed`;
     }
     return `${monthsLogged} month${monthsLogged > 1 ? 's' : ''} contributed`;
-  }, [monthsLogged, investmentGoals.length]);
+  }, [monthsLogged, deployedInvestments, fundBalances.investment]);
 
   const fundCards: FundCardData[] = [
     {
@@ -155,7 +174,7 @@ export default function DashboardTab() {
       subtitle: 'Long-term wealth',
       color: colors.fund.investment,
       icon: 'trending-up-outline',
-      balance: fundBalances.investment,
+      balance: fundBalances.investment + deployedInvestments,
       footerLine: investmentFooter,
     },
   ];

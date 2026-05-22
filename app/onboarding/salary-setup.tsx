@@ -394,7 +394,7 @@ export default function SalarySetupScreen() {
               <Ionicons name="chevron-back" size={22} color={colors.text.primary} />
             </AnimatedPressable>
             <View style={styles.stepBadge}>
-              <Text style={styles.stepText}>Step 1 of 2</Text>
+              <Text style={styles.stepText}>Step 2 of 3</Text>
             </View>
           </Animated.View>
 
